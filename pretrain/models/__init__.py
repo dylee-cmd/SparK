@@ -12,8 +12,9 @@ from timm.models.layers import drop
 
 from models.convnext import ConvNeXt
 from models.resnet import ResNet
+from models.resnetd import ResNetVd
 from models.custom import YourConvNet
-_import_resnets_for_timm_registration = (ResNet,)
+_import_resnets_for_timm_registration = (ResNet, ResNetVd,)
 
 
 # log more
@@ -37,6 +38,10 @@ pretrain_default_model_kwargs = {
     'resnet101': dict(drop_path_rate=0.08),
     'resnet152': dict(drop_path_rate=0.10),
     'resnet200': dict(drop_path_rate=0.15),
+    'resnet18vd': dict(drop_path_rate=0.0),
+    'resnet34vd': dict(drop_path_rate=0.0),
+    'resnet50vd': dict(drop_path_rate=0.05),
+    'resnet101vd': dict(drop_path_rate=0.08),
     'convnext_small': dict(sparse=True, drop_path_rate=0.2),
     'convnext_base': dict(sparse=True, drop_path_rate=0.3),
     'convnext_large': dict(sparse=True, drop_path_rate=0.4),

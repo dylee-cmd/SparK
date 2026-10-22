@@ -19,6 +19,18 @@ See [/pretrain/models/custom.py](/pretrain/models/custom.py). Your todo list is:
 Then run the experiment with `--model=your_convnet`.
 
 
+## Pretraining ResNet-vd (Baidu/PaddlePaddle ResNet-D, e.g., the backbone of RT-DETR)
+
+[/pretrain/models/resnetd.py](/pretrain/models/resnetd.py) provides `resnet18vd`, `resnet34vd`, `resnet50vd` and `resnet101vd`, whose parameter names are identical to `ResNetV1dPaddle` used by RT-DETR (mmdet/ai4rs).
+Run the experiment with `--model=resnet50vd`; the saved `resnet50vd_1kpretrained_timm_style.pth` can be used directly as RT-DETR's `backbone.init_cfg=dict(type='Pretrained', checkpoint=...)`.
+
+To check that the structure is the same as the backbone of an existing checkpoint:
+```shell script
+cd /path/to/SparK/pretrain
+python3 check_resnetvd_ckpt.py --arch=resnet50vd --ckpt=https://www.modelscope.cn/models/wokaikaixinxin/ai4rs/resolve/master/rtdetr/rtdetr_r50vd_8xb2-72e_coco_ad2bdcfe.pth
+```
+
+
 ## Tutorial for pretraining on your own dataset
 
 See the comment of `build_dataset_to_pretrain` in [line55 of /pretrain/utils/imagenet.py](/pretrain/utils/imagenet.py#L55). Your todo list:
