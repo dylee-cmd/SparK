@@ -52,7 +52,7 @@ class ImageNetDataset(DatasetFolder):
         return self.transform(self.loader(img_file_path))
 
 
-def build_dataset_to_pretrain(dataset_path, input_size) -> Dataset:
+def build_dataset_to_pretrain(dataset_path, input_size, data_type='tif') -> Dataset:
     """
     You may need to modify this function to return your own dataset.
     Define a new class, a subclass of `Dataset`, to replace our ImageNetDataset.
@@ -61,8 +61,28 @@ def build_dataset_to_pretrain(dataset_path, input_size) -> Dataset:
     
     :param dataset_path: the folder of dataset
     :param input_size: the input size (image resolution)
+    :param data_type: 'tif': [0, 1] float tif patches made by `make_tif_patches.py`, used WITHOUT normalization;
+                      'imagenet': the ImageNet folder (RGB images normalized by the ImageNet mean and std)
     :return: the dataset used for pretraining
     """
+    dataset_path = os.path.abspath(dataset_path)
+    if data_type == 'tif':
+        from utils.tif_dataset import TifPatchDataset, Clamp
+        try:
+            rrc = transforms.RandomResizedCrop(input_size, scale=(0.67, 1.0), interpolation=interpolation, antialias=True)
+        except TypeError:   # old torchvision has no `antialias`
+            rrc = transforms.RandomResizedCrop(input_size, scale=(0.67, 1.0), interpolation=interpolation)
+        trans_train = transforms.Compose([  # the input is already a [0, 1] float tensor: no ToTensor, no Normalize
+            rrc,
+            transforms.RandomHorizontalFlip(),
+            Clamp(0., 1.),
+        ])
+        dataset_train = TifPatchDataset(folder=dataset_path, transform=trans_train)
+        print(f'[build_dataset_to_pretrain] {len(dataset_train)} tif patches found in {dataset_path}')
+        print_transform(trans_train, '[pre-train]')
+        return dataset_train
+    
+    assert data_type == 'imagenet', f'unknown data_type: {data_type}'
     trans_train = transforms.Compose([
         transforms.RandomResizedCrop(input_size, scale=(0.67, 1.0), interpolation=interpolation),
         transforms.RandomHorizontalFlip(),
@@ -70,7 +90,6 @@ def build_dataset_to_pretrain(dataset_path, input_size) -> Dataset:
         transforms.Normalize(mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD),
     ])
     
-    dataset_path = os.path.abspath(dataset_path)
     for postfix in ('train', 'val'):
         if dataset_path.endswith(postfix):
             dataset_path = dataset_path[:-len(postfix)]

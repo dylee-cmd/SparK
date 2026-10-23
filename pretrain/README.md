@@ -31,6 +31,23 @@ python3 check_resnetvd_ckpt.py --arch=resnet50vd --ckpt=https://www.modelscope.c
 ```
 
 
+## Pretraining on remote sensing scenes (float [0, 1] tif patches)
+
+1. Crop the large scenes into patches with [/pretrain/make_tif_patches.py](/pretrain/make_tif_patches.py) (requires GDAL: `conda install -c conda-forge gdal`).
+   Each scene is contrast-stretched by its 99th percentile (per band) to [0, 1] and saved as **float32** GeoTIFF patches (not converted to uint8).
+   Patches whose no-data/shadow pixels (NaN, or all bands == nodata value, 0 by default) are >= 20% are dropped.
+```shell script
+cd /path/to/SparK/pretrain
+python3 make_tif_patches.py --src_dir=/path/to/scenes --dst_dir=/path/to/patches --patch_size=224 --stride=100 --workers=8
+# options: --percentile=99 --percentile_mode=band|global --max_invalid_ratio=0.2 --nodata=0 --bands 3 2 1 --compress=DEFLATE
+```
+2. Pretrain with `--data_type=tif` (the default). The patches are read as they are (no ImageNet normalization); 1-band patches are repeated to 3 channels.
+```shell script
+python3 main.py --exp_name=rs_r50vd --exp_dir=/path/to/exp --data_path=/path/to/patches --data_type=tif --model=resnet50vd --input_size=224 --bs=512
+```
+Use `--data_type=imagenet` for the original ImageNet pipeline.
+
+
 ## Tutorial for pretraining on your own dataset
 
 See the comment of `build_dataset_to_pretrain` in [line55 of /pretrain/utils/imagenet.py](/pretrain/utils/imagenet.py#L55). Your todo list:
