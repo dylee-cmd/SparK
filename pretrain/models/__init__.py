@@ -7,7 +7,10 @@
 import torch
 from timm import create_model
 from timm.loss import SoftTargetCrossEntropy
-from timm.models.layers import drop
+try:
+    from timm.layers import drop            # timm >= 0.9
+except ImportError:
+    from timm.models.layers import drop     # timm == 0.5.4
 
 
 from models.convnext import ConvNeXt

@@ -23,8 +23,12 @@ from typing import List
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from timm.models.layers import DropPath
-from timm.models.registry import register_model
+try:
+    from timm.layers import DropPath                # timm >= 0.9
+    from timm.models import register_model
+except ImportError:
+    from timm.models.layers import DropPath         # timm == 0.5.4
+    from timm.models.registry import register_model
 
 
 def conv3x3(in_planes, out_planes, stride=1):
@@ -142,7 +146,7 @@ class ResNetVd(nn.Module):
         return 32
 
     def get_feature_map_channels(self) -> List[int]:
-        return self.feature_map_channels
+        return list(self.feature_map_channels)    # return a copy: SparK pops from this list
 
     def forward(self, x, hierarchical=False):
         x = self.stem(x)
