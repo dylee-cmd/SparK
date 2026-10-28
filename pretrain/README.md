@@ -51,6 +51,9 @@ torchrun --nproc_per_node=8 --nnodes=1 --node_rank=0 --master_addr=localhost --m
   --model=resnet101vd --input_size=224 --bs=512
 # for 4-band patches: add `--tif_bands=1,2,3`; to resume: add `--resume_from=/path/to/exp/resnet101vd_withdecoder_1kpretrained_spark_style.pth`
 ```
+**Note for a large patch set**: the defaults `--ep=1600 --wp_ep=40` are for ImageNet (1.28M images, 312 iterations/epoch with bs=4096).
+`make_tif_patches.py --stride=100` with 224 patches gives ~5x overlapping patches, so one epoch can have >100k iterations (see `iters_train` in the log).
+Choose `--ep` and `--wp_ep` (can be a fraction) by the total number of iterations, e.g., for ~500k iterations in total with 130k iterations/epoch: `--ep=4 --wp_ep=0.1`.
 Use `--data_type=imagenet` for the original ImageNet pipeline.
 
 Or use [/pretrain/train_resnet101_tif.sh](/pretrain/train_resnet101_tif.sh), which launches DDP with `torchrun` (all visible GPUs by default) and resumes automatically:

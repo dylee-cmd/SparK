@@ -312,8 +312,9 @@ class MetricLogger(object):
                 yield obj
                 self.iter_time.update(time.time() - end)
                 if i in print_iters:
-                    eta_seconds = self.iter_time.global_avg * (max_iters - i)
-                    eta_string = str(datetime.timedelta(seconds=int(eta_seconds)))
+                    # use the recent iterations (not the global average): the 1st iteration includes the one-time startup cost
+                    eta_seconds = self.iter_time.avg * (max_iters - i)
+                    eta_string = str(datetime.timedelta(seconds=int(eta_seconds))) if i > 0 else '(estimating)'
                     print(log_msg.format(
                         i, max_iters, eta=eta_string,
                         meters=str(self),
@@ -325,8 +326,9 @@ class MetricLogger(object):
                 yield obj
                 self.iter_time.update(time.time() - end)
                 if i in print_iters:
-                    eta_seconds = self.iter_time.global_avg * (max_iters - i)
-                    eta_string = str(datetime.timedelta(seconds=int(eta_seconds)))
+                    # use the recent iterations (not the global average): the 1st iteration includes the one-time startup cost
+                    eta_seconds = self.iter_time.avg * (max_iters - i)
+                    eta_string = str(datetime.timedelta(seconds=int(eta_seconds))) if i > 0 else '(estimating)'
                     print(log_msg.format(
                         i, max_iters, eta=eta_string,
                         meters=str(self),

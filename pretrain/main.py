@@ -64,6 +64,7 @@ def get_args_parser() -> argparse.ArgumentParser:
     # data hyperparameters
     parser.add_argument('--bs', type=int, default=4096, help='the TOTAL batch size of all GPUs')
     parser.add_argument('--dataloader_workers', type=int, default=8, help='dataloader workers of each GPU')
+    parser.add_argument('--log_freq', type=int, default=100, help='print the training status every this many iterations')
     
     # pre-training hyperparameters
     parser.add_argument('--dp', type=float, default=0.0, help='drop path rate; 0: use the default of the model in models/__init__.py')
@@ -71,7 +72,7 @@ def get_args_parser() -> argparse.ArgumentParser:
     parser.add_argument('--wd', type=float, default=0.04, help='weight decay at the beginning')
     parser.add_argument('--wde', type=float, default=0.2, help='weight decay at the end')
     parser.add_argument('--ep', type=int, default=1600, help='pretraining epochs')
-    parser.add_argument('--wp_ep', type=int, default=40, help='warmup epochs')
+    parser.add_argument('--wp_ep', type=float, default=40, help='warmup epochs, can be a fraction (e.g., 0.2) for a large dataset with many iterations per epoch')
     parser.add_argument('--clip', type=float, default=5., help='gradient clipping (<= 0: no clipping)')
     parser.add_argument('--opt', type=str.lower, default='lamb', choices=['lamb', 'adamw'], help='optimizer')
     parser.add_argument('--ada', type=float, default=0., help='beta2 of the optimizer; 0: 0.95 for ResNets, 0.999 for ConvNeXts')
@@ -264,7 +265,7 @@ def pre_train_one_ep(ep, args: argparse.Namespace, tb_lg: misc.TensorboardLogger
     if early_clipping:
         params_req_grad = [p for p in model.parameters() if p.requires_grad]
     
-    for it, inp in enumerate(me.log_every(iters_train, itrt_train, 3, header)):
+    for it, inp in enumerate(me.log_every(iters_train, itrt_train, max(3, iters_train // max(1, args.log_freq) + 1), header)):
         # adjust lr and wd
         min_lr, max_lr, min_wd, max_wd = lr_wd_annealing(optimizer, args.lr, args.wd, args.wde, it + ep * iters_train, args.wp_ep * iters_train, args.ep * iters_train)
         

@@ -57,23 +57,38 @@ class TifPatchDataset(Dataset):
         """
         super(TifPatchDataset, self).__init__()
         # sorted: every DDP rank gets the same sample order, so `DistInfiniteBatchSampler` splits the indices consistently
-        self.samples = tuple(sorted(
-            os.path.join(r, f) for r, _, fs in os.walk(folder, followlinks=True) for f in fs if f.lower().endswith(exts)
-        ))
-        if len(self.samples) == 0:
+        folder = os.path.abspath(folder)
+        rel_paths = sorted(
+            os.path.relpath(os.path.join(r, f), folder) for r, _, fs in os.walk(folder, followlinks=True) for f in fs if f.lower().endswith(exts)
+        )
+        if len(rel_paths) == 0:
             raise FileNotFoundError(f'no tif file found in {folder}')
+        self.root = folder
         self.bands = tuple(bands) if bands else None
         self.transform = transform
         self.targets = None  # this is self-supervised learning so we don't need labels
-        self.check_bands()
+        self.check_bands(rel_paths)
+        
+        # store millions of paths compactly as two tensors (utf-8 bytes + offsets), instead of a tuple of python strings:
+        # under DDP (`spawn`), every dataloader worker receives the dataset by pickling; tensors are passed by shared memory,
+        # while a tuple of strings is copied to each worker (slow startup, and #GPUs x #workers copies in RAM)
+        encoded = [p.encode('utf-8') for p in rel_paths]
+        del rel_paths
+        self._offsets = torch.zeros(len(encoded) + 1, dtype=torch.int64)
+        torch.cumsum(torch.tensor([len(b) for b in encoded], dtype=torch.int64), dim=0, out=self._offsets[1:])
+        self._path_bytes = torch.frombuffer(bytearray(b''.join(encoded)), dtype=torch.uint8).clone()
     
-    def check_bands(self):
+    def get_path(self, index: int) -> str:
+        s, e = self._offsets[index].item(), self._offsets[index + 1].item()
+        return os.path.join(self.root, self._path_bytes[s:e].numpy().tobytes().decode('utf-8'))
+    
+    def check_bands(self, rel_paths):
         """ fail fast (before training) if the band count does not fit: check the first patch of each folder (i.e., each scene) """
         if self.bands and (len(self.bands) not in (1, 3) or min(self.bands) < 1):
             raise ValueError(f'--tif_bands={",".join(map(str, self.bands))}: should be 1 or 3 band indices, 1-based')
         first_of_each_dir = {}
-        for p in self.samples:
-            first_of_each_dir.setdefault(os.path.dirname(p), p)
+        for p in rel_paths:
+            first_of_each_dir.setdefault(os.path.dirname(p), os.path.join(self.root, p))
         errors = []
         for p in first_of_each_dir.values():
             ds = gdal.Open(p, gdal.GA_ReadOnly)
@@ -88,7 +103,7 @@ class TifPatchDataset(Dataset):
                              'or `make_tif_patches.py --bands 1 2 3`:\n  ' + '\n  '.join(errors[:20]) + (f'\n  ... ({len(errors)} in total)' if len(errors) > 20 else ''))
     
     def __len__(self):
-        return len(self.samples)
+        return self._offsets.numel() - 1
     
     def __getitem__(self, index: int) -> torch.Tensor:
-        return self.transform(tif_loader(self.samples[index], self.bands))
+        return self.transform(tif_loader(self.get_path(index), self.bands))
