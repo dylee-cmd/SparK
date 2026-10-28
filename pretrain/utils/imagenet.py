@@ -52,7 +52,7 @@ class ImageNetDataset(DatasetFolder):
         return self.transform(self.loader(img_file_path))
 
 
-def build_dataset_to_pretrain(dataset_path, input_size, data_type='tif') -> Dataset:
+def build_dataset_to_pretrain(dataset_path, input_size, data_type='tif', tif_bands='') -> Dataset:
     """
     You may need to modify this function to return your own dataset.
     Define a new class, a subclass of `Dataset`, to replace our ImageNetDataset.
@@ -63,6 +63,7 @@ def build_dataset_to_pretrain(dataset_path, input_size, data_type='tif') -> Data
     :param input_size: the input size (image resolution)
     :param data_type: 'tif': [0, 1] float tif patches made by `make_tif_patches.py`, used WITHOUT normalization;
                       'imagenet': the ImageNet folder (RGB images normalized by the ImageNet mean and std)
+    :param tif_bands: (only for 'tif') 1-based band indices separated by commas, e.g., '1,2,3'; '': use all bands
     :return: the dataset used for pretraining
     """
     dataset_path = os.path.abspath(dataset_path)
@@ -77,8 +78,9 @@ def build_dataset_to_pretrain(dataset_path, input_size, data_type='tif') -> Data
             transforms.RandomHorizontalFlip(),
             Clamp(0., 1.),
         ])
-        dataset_train = TifPatchDataset(folder=dataset_path, transform=trans_train)
-        print(f'[build_dataset_to_pretrain] {len(dataset_train)} tif patches found in {dataset_path}')
+        bands = [int(b) for b in str(tif_bands).replace(' ', '').split(',') if b] or None
+        dataset_train = TifPatchDataset(folder=dataset_path, transform=trans_train, bands=bands)
+        print(f'[build_dataset_to_pretrain] {len(dataset_train)} tif patches found in {dataset_path}, bands={bands or "all"}')
         print_transform(trans_train, '[pre-train]')
         return dataset_train
     

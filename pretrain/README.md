@@ -41,9 +41,15 @@ cd /path/to/SparK/pretrain
 python3 make_tif_patches.py --src_dir=/path/to/scenes --dst_dir=/path/to/patches --patch_size=224 --stride=100 --workers=8
 # options: --percentile=99 --percentile_mode=band|global --max_invalid_ratio=0.2 --nodata=0 --bands 3 2 1 --compress=DEFLATE
 ```
-2. Pretrain with `--data_type=tif` (the default). The patches are read as they are (no ImageNet normalization); 1-band patches are repeated to 3 channels.
+2. Pretrain with `--data_type=tif` (the default), giving the `--dst_dir` of step 1 as `--data_path` (patches are searched recursively).
+   The patches are read as they are (no ImageNet normalization); 1-band patches are repeated to 3 channels.
+   If the patches have other than 1 or 3 bands (e.g., RGB+NIR), select them by `--tif_bands=1,2,3` (1-based); this is checked before training starts.
 ```shell script
-python3 main.py --exp_name=rs_r50vd --exp_dir=/path/to/exp --data_path=/path/to/patches --data_type=tif --model=resnet50vd --input_size=224 --bs=512
+# DDP on 8 GPUs of 1 machine (--bs is the total batch size of all GPUs, and must be divisible by the number of GPUs)
+torchrun --nproc_per_node=8 --nnodes=1 --node_rank=0 --master_addr=localhost --master_port=29500 main.py \
+  --data_path=/path/to/patches --data_type=tif --exp_name=rs_r101vd --exp_dir=/path/to/exp \
+  --model=resnet101vd --input_size=224 --bs=512
+# for 4-band patches: add `--tif_bands=1,2,3`; to resume: add `--resume_from=/path/to/exp/resnet101vd_withdecoder_1kpretrained_spark_style.pth`
 ```
 Use `--data_type=imagenet` for the original ImageNet pipeline.
 

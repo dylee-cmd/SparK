@@ -19,6 +19,7 @@ class Args(Tap):
     exp_dir: str = 'your_exp_dir'   # will be created if not exists
     data_path: str = 'imagenet_data_path'
     data_type: str = 'tif'  # 'tif': [0, 1] float tif patches made by `make_tif_patches.py` (no normalization); 'imagenet': the ImageNet folder
+    tif_bands: str = ''     # (only for --data_type=tif) 1-based band indices to use, e.g., '1,2,3' or '3,2,1'; '': all bands (each patch must have 1 or 3 bands)
     init_weight: str = ''   # use some checkpoint as model weight initialization; ONLY load model weights
     resume_from: str = ''   # resume the experiment from some checkpoint.pth; load model weights, optimizer states, and last epoch
     
