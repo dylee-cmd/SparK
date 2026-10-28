@@ -35,7 +35,7 @@ def initialize(backend='nccl'):
     if mp.get_start_method(allow_none=True) is None:
         mp.set_start_method('spawn')
     global_rank, num_gpus = int(os.environ['RANK']), torch.cuda.device_count()
-    local_rank = global_rank % num_gpus
+    local_rank = int(os.environ.get('LOCAL_RANK', global_rank % num_gpus))  # `LOCAL_RANK` is set by torchrun
     torch.cuda.set_device(local_rank)
     tdist.init_process_group(backend=backend)
     

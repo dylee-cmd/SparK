@@ -47,6 +47,13 @@ python3 main.py --exp_name=rs_r50vd --exp_dir=/path/to/exp --data_path=/path/to/
 ```
 Use `--data_type=imagenet` for the original ImageNet pipeline.
 
+Or use [/pretrain/train_resnet101_tif.sh](/pretrain/train_resnet101_tif.sh), which launches DDP with `torchrun` (all visible GPUs by default) and resumes automatically:
+```shell script
+bash train_resnet101_tif.sh /path/to/patches /path/to/exp_dir                                  # 1 node, all GPUs
+CUDA_VISIBLE_DEVICES=0,1,2,3 BATCH_PER_GPU=32 bash train_resnet101_tif.sh /path/to/patches /path/to/exp_dir
+NNODES=2 NODE_RANK=0 MASTER_ADDR=<master_ip> bash train_resnet101_tif.sh /path/to/patches /path/to/exp_dir   # on each node
+```
+
 
 ## Tutorial for pretraining on your own dataset
 
