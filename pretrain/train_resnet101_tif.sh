@@ -42,7 +42,7 @@ fi
 # ---------------- hyperparameters (SparK defaults except the batch size) ----------------
 BATCH_PER_GPU=${BATCH_PER_GPU:-64}                          # lower it if CUDA out of memory
 BS=${BS:-$((BATCH_PER_GPU * NPROC_PER_NODE * NNODES))}      # total batch size of all GPUs
-BASE_LR=${BASE_LR:-2e-4}            # actual lr = base_lr * bs / 256 (computed in utils/arg_util.py)
+BASE_LR=${BASE_LR:-2e-4}            # actual lr = base_lr * bs / 256 (computed in main.py)
 EP=${EP:-1600}
 WP_EP=${WP_EP:-40}
 MASK=${MASK:-0.6}

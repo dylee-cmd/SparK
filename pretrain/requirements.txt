@@ -1,7 +1,6 @@
 matplotlib
 numpy
 Pillow
-typed-argument-parser
 timm==0.5.4
 tensorboardx
 gdal   # for --data_type=tif and make_tif_patches.py; recommended: conda install -c conda-forge gdal

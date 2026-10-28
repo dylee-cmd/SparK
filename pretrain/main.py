@@ -4,8 +4,11 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
+import argparse
 import datetime
+import json
 import math
+import os
 import sys
 import time
 from functools import partial
@@ -21,9 +24,123 @@ from decoder import LightDecoder
 from models import build_sparse_encoder
 from sampler import DistInfiniteBatchSampler, worker_init_fn
 from spark import SparK
-from utils import arg_util, misc, lamb
+from utils import misc, lamb
 from utils.imagenet import build_dataset_to_pretrain
 from utils.lr_control import lr_wd_annealing, get_param_groups
+
+
+def str2bool(v) -> bool:
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ('true', 't', 'yes', 'y', '1'):
+        return True
+    if v.lower() in ('false', 'f', 'no', 'n', '0'):
+        return False
+    raise argparse.ArgumentTypeError(f'boolean value expected, got {v!r}')
+
+
+def get_args_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser('SparK pretraining', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    # environment
+    parser.add_argument('--exp_name', type=str, default='your_exp_name', help='experiment name')
+    parser.add_argument('--exp_dir', type=str, default='your_exp_dir', help='will be created if not exists')
+    parser.add_argument('--data_path', type=str, default='imagenet_data_path', help='for --data_type=tif: the --dst_dir of make_tif_patches.py')
+    parser.add_argument('--data_type', type=str, default='tif', choices=['tif', 'imagenet'],
+                        help="'tif': [0, 1] float tif patches made by make_tif_patches.py (no normalization); 'imagenet': the ImageNet folder")
+    parser.add_argument('--tif_bands', type=str, default='',
+                        help="(only for --data_type=tif) 1-based band indices to use, e.g., '1,2,3' or '3,2,1'; '': all bands (each patch must have 1 or 3 bands)")
+    parser.add_argument('--init_weight', type=str, default='', help='use some checkpoint as model weight initialization; ONLY load model weights')
+    parser.add_argument('--resume_from', type=str, default='', help='resume the experiment from some checkpoint.pth; load model weights, optimizer states, and last epoch')
+    parser.add_argument('--tb_lg_dir', type=str, default='', help="tensorboard log directory ('': <exp_dir>/tensorboard_log)")
+    
+    # SparK hyperparameters
+    parser.add_argument('--mask', type=float, default=0.6, help='mask ratio, should be in (0, 1)')
+    
+    # encoder hyperparameters
+    parser.add_argument('--model', type=str, default='resnet50', help="see the keys of 'pretrain_default_model_kwargs' in models/__init__.py")
+    parser.add_argument('--input_size', type=int, default=224, help='input resolution, a multiple of 32')
+    parser.add_argument('--sbn', type=str2bool, default=True, help='use SyncBatchNorm (only when DDP is initialized), e.g., --sbn=False')
+    
+    # data hyperparameters
+    parser.add_argument('--bs', type=int, default=4096, help='the TOTAL batch size of all GPUs')
+    parser.add_argument('--dataloader_workers', type=int, default=8, help='dataloader workers of each GPU')
+    
+    # pre-training hyperparameters
+    parser.add_argument('--dp', type=float, default=0.0, help='drop path rate; 0: use the default of the model in models/__init__.py')
+    parser.add_argument('--base_lr', type=float, default=2e-4, help='the actual lr = base_lr * bs / 256')
+    parser.add_argument('--wd', type=float, default=0.04, help='weight decay at the beginning')
+    parser.add_argument('--wde', type=float, default=0.2, help='weight decay at the end')
+    parser.add_argument('--ep', type=int, default=1600, help='pretraining epochs')
+    parser.add_argument('--wp_ep', type=int, default=40, help='warmup epochs')
+    parser.add_argument('--clip', type=float, default=5., help='gradient clipping (<= 0: no clipping)')
+    parser.add_argument('--opt', type=str.lower, default='lamb', choices=['lamb', 'adamw'], help='optimizer')
+    parser.add_argument('--ada', type=float, default=0., help='beta2 of the optimizer; 0: 0.95 for ResNets, 0.999 for ConvNeXts')
+    return parser
+
+
+def init_dist_and_get_args() -> argparse.Namespace:
+    args = get_args_parser().parse_args()
+    args.cmd = ' '.join(sys.argv[1:])
+    args.commit_id = os.popen('git rev-parse HEAD').read().strip() or '[unknown]'
+    args.commit_msg = (os.popen('git log -1').read().strip().splitlines() or ['[unknown]'])[-1].strip()
+    
+    # the experiment directory (only letters, digits and '-' are kept in its name)
+    e = os.path.abspath(args.exp_dir)
+    d, e = os.path.dirname(e), os.path.basename(e)
+    e = ''.join(ch if (ch.isalnum() or ch == '-') else '_' for ch in e)
+    args.exp_dir = os.path.join(d, e)
+    os.makedirs(args.exp_dir, exist_ok=True)
+    args.log_txt_name = os.path.join(args.exp_dir, 'pretrain_log.txt')
+    args.tb_lg_dir = args.tb_lg_dir or os.path.join(args.exp_dir, 'tensorboard_log')
+    try:
+        os.makedirs(args.tb_lg_dir, exist_ok=True)
+    except:
+        pass
+    
+    misc.init_distributed_environ(exp_dir=args.exp_dir)
+    
+    # runtime args (updated automatically)
+    if not dist.initialized():
+        args.sbn = False
+    args.device = dist.get_device()
+    args.batch_size_per_gpu = args.bs // dist.get_world_size()
+    args.glb_batch_size = args.batch_size_per_gpu * dist.get_world_size()
+    args.densify_norm = ''
+    if 'resnet' in args.model:
+        args.ada = args.ada or 0.95
+        args.densify_norm = 'bn'
+    if 'convnext' in args.model or 'cnx' in args.model:
+        args.ada = args.ada or 0.999
+        args.densify_norm = 'ln'
+    args.lr = args.base_lr * args.glb_batch_size / 256
+    args.wde = args.wde or args.wd
+    
+    # for logging
+    args.first_logging = True
+    args.last_loss, args.cur_ep, args.remain_time, args.finish_time = 0., '', '', ''
+    return args
+
+
+def log_epoch(args: argparse.Namespace):
+    if not dist.is_local_master():
+        return
+    
+    if args.first_logging:
+        args.first_logging = False
+        with open(args.log_txt_name, 'w') as fp:
+            json.dump({
+                'name': args.exp_name, 'cmd': args.cmd, 'git_commit_id': args.commit_id, 'git_commit_msg': args.commit_msg,
+                'model': args.model,
+            }, fp)
+            fp.write('\n\n')
+    
+    with open(args.log_txt_name, 'a') as fp:
+        json.dump({
+            'cur_ep': args.cur_ep,
+            'last_L': args.last_loss,
+            'rema': args.remain_time, 'fini': args.finish_time,
+        }, fp)
+        fp.write('\n')
 
 
 class LocalDDP(torch.nn.Module):
@@ -36,9 +153,9 @@ class LocalDDP(torch.nn.Module):
 
 
 def main_pt():
-    args: arg_util.Args = arg_util.init_dist_and_get_args()
-    print(f'initial args:\n{str(args)}')
-    args.log_epoch()
+    args = init_dist_and_get_args()
+    print(f'initial args:\n' + '\n'.join(f'  {k}: {v}' for k, v in vars(args).items()))
+    log_epoch(args)
     
     # build data
     print(f'[build data for pre-training] ...\n')
@@ -114,7 +231,7 @@ def main_pt():
             args.cur_ep = f'{ep + 1}/{args.ep}'
             args.remain_time, args.finish_time = str(remain_time), str(finish_time)
             args.last_loss = last_loss
-            args.log_epoch()
+            log_epoch(args)
             
             tb_lg.update(min_loss=min_loss, head='train', step=ep)
             tb_lg.update(rest_hours=round(remain_secs/60/60, 2), head='z_burnout', step=ep)
@@ -132,10 +249,10 @@ def main_pt():
         time.sleep(10)
     
     args.remain_time, args.finish_time = '-', time.strftime("%m-%d %H:%M", time.localtime(time.time()))
-    args.log_epoch()
+    log_epoch(args)
 
 
-def pre_train_one_ep(ep, args: arg_util.Args, tb_lg: misc.TensorboardLogger, itrt_train, iters_train, model: DistributedDataParallel, optimizer):
+def pre_train_one_ep(ep, args: argparse.Namespace, tb_lg: misc.TensorboardLogger, itrt_train, iters_train, model: DistributedDataParallel, optimizer):
     model.train()
     me = misc.MetricLogger(delimiter='  ')
     me.add_meter('max_lr', misc.SmoothedValue(window_size=1, fmt='{value:.5f}'))

@@ -86,10 +86,10 @@ For pretraining, run [/pretrain/main.py](/pretrain/main.py) with `torchrun`.
 **It is required to specify** the ImageNet data folder (`--data_path`), your experiment name & log dir (`--exp_name` and `--exp_dir`, automatically created if not exists), and the model name (`--model`, valid choices see the keys of 'pretrain_default_model_kwargs' in [/pretrain/models/\_\_init\_\_.py line34](/pretrain/models/__init__.py#L34)).
 
 We use the **same** pretraining configurations (lr, batch size, etc.) for all models (ResNets and ConvNeXts) in 224 pretraining.
-Their **names** and **default values** are in [/pretrain/utils/arg_util.py line23-44](/pretrain/utils/arg_util.py#L23-L44).
+Their **names** and **default values** are in `get_args_parser()` of [/pretrain/main.py](/pretrain/main.py) (or run `python3 main.py --help`).
 All these default configurations (like batch size 4096) would be used, unless you specify some like `--bs=512`.
 
-**Note: the batch size `--bs` is the total batch size of all GPU, and the learning rate `--base_lr` is the base lr. The actual lr would be `lr = base_lr * bs / 256`, as in [/pretrain/utils/arg_util.py line131](/pretrain/utils/arg_util.py#L131). So do not use `--lr` to specify a lr (that will be ignored)**
+**Note: the batch size `--bs` is the total batch size of all GPU, and the learning rate `--base_lr` is the base lr. The actual lr would be `lr = base_lr * bs / 256`, as in `init_dist_and_get_args()` of [/pretrain/main.py](/pretrain/main.py). So do not use `--lr` to specify a lr (that will be ignored)**
 
 Here is an example to pretrain a ResNet50 on an 8-GPU single machine (we use DistributedDataParallel), overwriting the default batch size to 512:
 ```shell script
