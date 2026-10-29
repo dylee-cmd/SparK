@@ -110,7 +110,8 @@ class SparK(nn.Module):
         
         # step4. Decode and reconstruct
         rec_bchw = self.dense_decoder(to_dec)
-        inp, rec = self.patchify(inp_bchw), self.patchify(rec_bchw)   # inp and rec: (B, L = f*f, N = C*downsample_raito**2)
+        rec_bchw = rec_bchw.float()     # compute the reconstruction loss in fp32 even under bf16 autocast (`--bf16`)
+        inp, rec = self.patchify(inp_bchw.float()), self.patchify(rec_bchw)   # inp and rec: (B, L = f*f, N = C*downsample_raito**2)
         mean = inp.mean(dim=-1, keepdim=True)
         var = (inp.var(dim=-1, keepdim=True) + 1e-6) ** .5
         inp = (inp - mean) / var

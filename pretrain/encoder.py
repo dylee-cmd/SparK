@@ -28,9 +28,10 @@ def sp_bn_forward(self, x: torch.Tensor):
     
     bhwc = x.permute(0, 2, 3, 1)
     nc = bhwc[ii]                               # select the features on non-masked positions to form a flatten feature `nc`
-    nc = super(type(self), self).forward(nc)    # use BN1d to normalize this flatten feature `nc`
+    with torch.autocast(device_type=x.device.type, enabled=False):  # under bf16 autocast (`--bf16`), keep BN (and SyncBN) in fp32
+        nc = super(type(self), self).forward(nc.float())    # use BN1d to normalize this flatten feature `nc`
     
-    bchw = torch.zeros_like(bhwc)
+    bchw = torch.zeros_like(bhwc, dtype=nc.dtype)
     bchw[ii] = nc
     bchw = bchw.permute(0, 3, 1, 2)
     return bchw
@@ -78,7 +79,7 @@ class SparseConvNeXtLayerNorm(nn.LayerNorm):
                     nc = x[ii]
                     nc = super(SparseConvNeXtLayerNorm, self).forward(nc)
     
-                    x = torch.zeros_like(x)
+                    x = torch.zeros_like(x, dtype=nc.dtype)     # under autocast, layer_norm outputs fp32 for a bf16 input
                     x[ii] = nc
                     return x
                 else:
@@ -90,7 +91,7 @@ class SparseConvNeXtLayerNorm(nn.LayerNorm):
                     nc = bhwc[ii]
                     nc = super(SparseConvNeXtLayerNorm, self).forward(nc)
                 
-                    x = torch.zeros_like(bhwc)
+                    x = torch.zeros_like(bhwc, dtype=nc.dtype)  # under autocast, layer_norm outputs fp32 for a bf16 input
                     x[ii] = nc
                     return x.permute(0, 3, 1, 2)
                 else:

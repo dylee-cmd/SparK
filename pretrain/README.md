@@ -50,6 +50,7 @@ torchrun --nproc_per_node=8 --nnodes=1 --node_rank=0 --master_addr=localhost --m
   --data_path=/path/to/patches --data_type=tif --exp_name=rs_r101vd --exp_dir=/path/to/exp \
   --model=resnet101vd --input_size=224 --bs=512
 # for 4-band patches: add `--tif_bands=1,2,3`; to resume: add `--resume_from=/path/to/exp/resnet101vd_withdecoder_1kpretrained_spark_style.pth`
+# for bfloat16 mixed precision (A100/H100/RTX30xx or newer): add `--bf16`
 ```
 **Patch list cache**: scanning millions of patch files is slow, so the sorted patch list is cached at `<data_path>/.spark_cache/tif_patch_list.pt`
 (or under `~/.cache/spark/` if `--data_path` is not writable; set another path by `--data_cache`). Only the local rank 0 scans the folder; the other ranks load the cache.

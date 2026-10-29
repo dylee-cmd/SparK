@@ -63,6 +63,8 @@ def get_args_parser() -> argparse.ArgumentParser:
     parser.add_argument('--model', type=str, default='resnet50', help="see the keys of 'pretrain_default_model_kwargs' in models/__init__.py")
     parser.add_argument('--input_size', type=int, default=224, help='input resolution, a multiple of 32')
     parser.add_argument('--sbn', type=str2bool, default=True, help='use SyncBatchNorm (only when DDP is initialized), e.g., --sbn=False')
+    parser.add_argument('--bf16', type=str2bool, nargs='?', const=True, default=False,
+                        help='mixed precision training with bfloat16 autocast (needs a GPU with bf16 support, e.g., A100/H100/RTX30xx+); `--bf16` or `--bf16=True`')
     
     # data hyperparameters
     parser.add_argument('--bs', type=int, default=4096, help='the TOTAL batch size of all GPUs')
@@ -107,6 +109,8 @@ def init_dist_and_get_args() -> argparse.Namespace:
     if not dist.initialized():
         args.sbn = False
     args.device = dist.get_device()
+    if args.bf16 and torch.device(args.device).type == 'cuda' and not torch.cuda.is_bf16_supported():
+        raise RuntimeError(f'--bf16: {torch.cuda.get_device_name()} does not support bfloat16; remove --bf16 to train in fp32')
     args.batch_size_per_gpu = args.bs // dist.get_world_size()
     args.glb_batch_size = args.batch_size_per_gpu * dist.get_world_size()
     args.densify_norm = ''
@@ -275,7 +279,8 @@ def pre_train_one_ep(ep, args: argparse.Namespace, tb_lg: misc.TensorboardLogger
         # forward and backward
         inp = inp.to(args.device, non_blocking=True)
         SparK.forward
-        loss = model(inp, active_b1ff=None, vis=False)
+        with torch.autocast(device_type=torch.device(args.device).type, dtype=torch.bfloat16, enabled=args.bf16):
+            loss = model(inp, active_b1ff=None, vis=False)
         optimizer.zero_grad()
         loss.backward()
         loss = loss.item()
