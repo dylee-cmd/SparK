@@ -52,7 +52,7 @@ class ImageNetDataset(DatasetFolder):
         return self.transform(self.loader(img_file_path))
 
 
-def build_dataset_to_pretrain(dataset_path, input_size, data_type='tif', tif_bands='') -> Dataset:
+def build_dataset_to_pretrain(dataset_path, input_size, data_type='tif', tif_bands='', data_cache='', rebuild_data_cache=False) -> Dataset:
     """
     You may need to modify this function to return your own dataset.
     Define a new class, a subclass of `Dataset`, to replace our ImageNetDataset.
@@ -64,6 +64,8 @@ def build_dataset_to_pretrain(dataset_path, input_size, data_type='tif', tif_ban
     :param data_type: 'tif': [0, 1] float tif patches made by `make_tif_patches.py`, used WITHOUT normalization;
                       'imagenet': the ImageNet folder (RGB images normalized by the ImageNet mean and std)
     :param tif_bands: (only for 'tif') 1-based band indices separated by commas, e.g., '1,2,3'; '': use all bands
+    :param data_cache: (only for 'tif') path of the patch list cache; '': `<dataset_path>/.spark_cache/tif_patch_list.pt` (or under ~/.cache/spark)
+    :param rebuild_data_cache: (only for 'tif') rescan the patch folder even if the cache is valid
     :return: the dataset used for pretraining
     """
     dataset_path = os.path.abspath(dataset_path)
@@ -79,7 +81,11 @@ def build_dataset_to_pretrain(dataset_path, input_size, data_type='tif', tif_ban
             Clamp(0., 1.),
         ])
         bands = [int(b) for b in str(tif_bands).replace(' ', '').split(',') if b] or None
-        dataset_train = TifPatchDataset(folder=dataset_path, transform=trans_train, bands=bands)
+        import dist
+        dataset_train = TifPatchDataset(
+            folder=dataset_path, transform=trans_train, bands=bands, cache_path=data_cache, rebuild_cache=rebuild_data_cache,
+            is_builder=dist.is_local_master(), barrier=dist.barrier,   # only the local rank 0 scans the folder; the others load its cache
+        )
         print(f'[build_dataset_to_pretrain] {len(dataset_train)} tif patches found in {dataset_path}, bands={bands or "all"}')
         print_transform(trans_train, '[pre-train]')
         return dataset_train

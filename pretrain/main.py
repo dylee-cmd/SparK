@@ -49,6 +49,9 @@ def get_args_parser() -> argparse.ArgumentParser:
                         help="'tif': [0, 1] float tif patches made by make_tif_patches.py (no normalization); 'imagenet': the ImageNet folder")
     parser.add_argument('--tif_bands', type=str, default='',
                         help="(only for --data_type=tif) 1-based band indices to use, e.g., '1,2,3' or '3,2,1'; '': all bands (each patch must have 1 or 3 bands)")
+    parser.add_argument('--data_cache', type=str, default='',
+                        help="(only for --data_type=tif) cache of the patch list, to skip scanning the folder next time; '': <data_path>/.spark_cache/tif_patch_list.pt (or ~/.cache/spark/ if not writable)")
+    parser.add_argument('--rebuild_data_cache', action='store_true', help='(only for --data_type=tif) rescan the patch folder even if the cache looks valid')
     parser.add_argument('--init_weight', type=str, default='', help='use some checkpoint as model weight initialization; ONLY load model weights')
     parser.add_argument('--resume_from', type=str, default='', help='resume the experiment from some checkpoint.pth; load model weights, optimizer states, and last epoch')
     parser.add_argument('--tb_lg_dir', type=str, default='', help="tensorboard log directory ('': <exp_dir>/tensorboard_log)")
@@ -160,7 +163,7 @@ def main_pt():
     
     # build data
     print(f'[build data for pre-training] ...\n')
-    dataset_train = build_dataset_to_pretrain(args.data_path, args.input_size, args.data_type, args.tif_bands)
+    dataset_train = build_dataset_to_pretrain(args.data_path, args.input_size, args.data_type, args.tif_bands, args.data_cache, args.rebuild_data_cache)
     data_loader_train = DataLoader(
         dataset=dataset_train, num_workers=args.dataloader_workers, pin_memory=True,
         batch_sampler=DistInfiniteBatchSampler(
