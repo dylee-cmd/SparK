@@ -8,15 +8,16 @@ Crop large scenes (GeoTIFF etc., anything GDAL can open) into patches for SparK 
 
 For each scene:
     1. compute the 99th percentile value (`--percentile`) of the valid pixels (per band by default)
-    2. contrast stretching: clip to [0, p99] and rescale to [0, 1] (float32, NOT converted to uint8)
+    2. contrast stretching: clip to [0, p99] and rescale to [0, 1] (float, NOT converted to uint8)
     3. slide a `--patch_size` window with a stride of `--stride` (100 by default) pixels
     4. drop the patch if no-data/shadow pixels (NaN, or all bands == nodata value) are >= `--max_invalid_ratio` (20%)
-    5. save the patch as a float32 GeoTIFF (with the georeference of the patch)
+    5. save the patch as a float GeoTIFF (with the georeference of the patch); 16-bit float by default (`--dtype`), half the size of float32
 The saved patches can be used directly by `main.py --data_type=tif --data_path=<dst_dir>` (no normalization).
 
 Usage (run under `pretrain/`):
     python3 make_tif_patches.py --src_dir=/path/to/scenes --dst_dir=/path/to/patches
     python3 make_tif_patches.py --src_dir=/path/to/scenes --dst_dir=/path/to/patches --patch_size=224 --stride=100 --bands 3 2 1 --workers=8
+    python3 make_tif_patches.py --src_dir=/path/to/scenes --dst_dir=/path/to/patches --dtype=float32   # full precision, 2x larger
 """
 import argparse
 import json
@@ -102,6 +103,10 @@ def process_scene(job):
     driver = gdal.GetDriverByName('GTiff')
     gt, proj = ds.GetGeoTransform(can_return_null=True), ds.GetProjection()
     options = [f'COMPRESS={args.compress}'] + (['PREDICTOR=3'] if args.compress in ('DEFLATE', 'LZW', 'ZSTD') else [])
+    if args.dtype == 'float16':
+        # a Float32 band stored with NBITS=16 is written as IEEE half-precision floats, and is read back as float32 by GDAL:
+        # half the size of float32; the error is <= 2^-11 (~4.9e-4) in [0, 1], and 0 and 1 are exact
+        options.append('NBITS=16')
 
     for y in ys:
         strip = read_bands(ds, bands, 0, y, W, ps)    # (C, ps, W): read one row of patches at once
@@ -132,7 +137,7 @@ def process_scene(job):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='crop large scenes into [0, 1] float32 tif patches for SparK pretraining')
+    parser = argparse.ArgumentParser(description='crop large scenes into [0, 1] float tif patches for SparK pretraining')
     parser.add_argument('--src_dir', type=str, required=True, help='folder containing the large scenes')
     parser.add_argument('--dst_dir', type=str, required=True, help='output folder (a sub-folder is created for each scene)')
     parser.add_argument('--patch_size', type=int, default=224, help='should be >= the --input_size of main.py')
@@ -145,6 +150,8 @@ def main():
     parser.add_argument('--bands', type=int, nargs='+', default=None, help='1-based band indices to keep (default: all bands); SparK uses 1 or 3 bands')
     parser.add_argument('--exts', type=str, nargs='+', default=['.tif', '.tiff'], help='extensions of the scene files')
     parser.add_argument('--no_recursive', action='store_true', help='do not search the scenes in sub-folders of --src_dir')
+    parser.add_argument('--dtype', type=str, default='float16', choices=['float16', 'float32'],
+                        help='storage precision of the [0, 1] values: float16 (half the size, error <= 4.9e-4; read as float32 for training) or float32')
     parser.add_argument('--compress', type=str, default='NONE', choices=['NONE', 'DEFLATE', 'LZW', 'ZSTD'], help='GeoTIFF compression of the patches')
     parser.add_argument('--stat_max_side', type=int, default=4096, help='the scene is downsampled to this longest side to compute the percentile')
     parser.add_argument('--workers', type=int, default=1, help='number of scenes processed in parallel')
