@@ -36,11 +36,13 @@ python3 check_resnetvd_ckpt.py --arch=resnet50vd --ckpt=https://www.modelscope.c
 1. Crop the large scenes into patches with [/pretrain/make_tif_patches.py](/pretrain/make_tif_patches.py) (requires GDAL: `conda install -c conda-forge gdal`).
    Each scene is contrast-stretched by its 99th percentile (per band) to [0, 1] and saved as **16-bit float** GeoTIFF patches (not converted to uint8;
    half the size of float32, error <= 4.9e-4, read as float32 for training). Use `--dtype=float32` for full precision.
-   Patches whose no-data/shadow pixels (NaN, or all bands == nodata value, 0 by default) are >= 20% are dropped.
+   Only the valid region of each scene (bounding box + convex hull of the valid swath, e.g., of SAR L1-D) is cropped. A pixel is invalid (no-data/shadow) if it is NaN,
+   all bands == nodata value (0 by default), all bands <= `--min_valid_val` (1e-5), or masked by the GDAL mask band; patches with >= 20% invalid pixels
+   (or outside the convex hull), or flat patches (std < `--min_patch_std`), are dropped.
 ```shell script
 cd /path/to/SparK/pretrain
 python3 make_tif_patches.py --src_dir=/path/to/scenes --dst_dir=/path/to/patches --patch_size=224 --stride=100 --workers=8
-# options: --percentile=99 --percentile_mode=band|global --max_invalid_ratio=0.2 --nodata=0 --bands 3 2 1 --dtype=float16|float32 --compress=DEFLATE
+# options: --percentile=99 --percentile_mode=band|global --max_invalid_ratio=0.2 --nodata=0 --min_valid_val=1e-5|none --min_patch_std=1e-4 --bands 3 2 1 --dtype=float16|float32 --compress=DEFLATE
 ```
 2. Pretrain with `--data_type=tif` (the default), giving the `--dst_dir` of step 1 as `--data_path` (patches are searched recursively).
    The patches are read as they are (no ImageNet normalization); 1-band patches are repeated to 3 channels.
