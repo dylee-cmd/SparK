@@ -163,12 +163,47 @@ def save_checkpoint_model_weights_only(save_to, args, sp_cnn_state):
 
 
 def initialize_weight(init_weight: str, model_without_ddp):
-    # use some checkpoint as model weight initialization; ONLY load model weights
-    if len(init_weight):
+    """
+    use some checkpoint as model weight initialization; ONLY load model weights. supported checkpoints:
+      - SparK checkpoints (`*_withdecoder_1kpretrained_spark_style.pth`, keys: sparse_encoder.sp_cnn.*, dense_decoder.*, ...)
+      - backbone-only checkpoints, e.g., ImageNet weights (`resnet101vd_ssld_pretrained_*.pth`) or `*_1kpretrained_timm_style.pth`,
+        optionally wrapped by 'state_dict'/'module' and prefixed by 'module.'/'backbone.'; they are loaded into the encoder (sparse_encoder.sp_cnn.*)
+    """
+    if not len(init_weight):
+        return
+    try:
+        checkpoint = torch.load(init_weight, 'cpu', weights_only=False)     # mmengine checkpoints contain non-tensor meta info
+    except TypeError:   # torch < 1.13 has no `weights_only`
         checkpoint = torch.load(init_weight, 'cpu')
-        missing, unexpected = model_without_ddp.load_state_dict(checkpoint.get('module', checkpoint), strict=False)
-        print(f'[initialize_weight] missing_keys={missing}')
-        print(f'[initialize_weight] unexpected_keys={unexpected}')
+    state = checkpoint
+    for key in ('module', 'state_dict', 'model'):
+        if isinstance(state, dict) and isinstance(state.get(key), dict):
+            state = state[key]
+            break
+    state = {k: v for k, v in state.items() if isinstance(v, torch.Tensor)}
+    
+    model_state = model_without_ddp.state_dict()
+    enc_prefix = 'sparse_encoder.sp_cnn.'
+    if not any(k in model_state for k in state):    # a backbone-only checkpoint: load it into the encoder
+        for p in ('module.', 'backbone.'):
+            if all(k.startswith(p) for k in state):
+                state = {k[len(p):]: v for k, v in state.items()}
+        state = {enc_prefix + k: v for k, v in state.items()}
+    
+    mismatched = [k for k, v in state.items() if k in model_state and model_state[k].shape != v.shape]
+    to_load = {k: v for k, v in state.items() if k in model_state and k not in mismatched}
+    missing, unexpected = model_without_ddp.load_state_dict(to_load, strict=False)
+    unexpected = sorted(k for k in state if k not in model_state)
+    
+    enc_keys = [k for k in model_state if k.startswith(enc_prefix) and not k.endswith('num_batches_tracked')]
+    n_enc_loaded = sum(k in to_load for k in enc_keys)
+    print(f'[initialize_weight] {init_weight}: loaded {len(to_load)} tensors; encoder: {n_enc_loaded}/{len(enc_keys)} tensors loaded')
+    print(f'[initialize_weight] missing_keys (not in the checkpoint, keep the random init) ({len(missing)}): {missing}')
+    print(f'[initialize_weight] unexpected_keys (ignored) ({len(unexpected)}): {unexpected}')
+    if mismatched:
+        print(f'[initialize_weight] shape-mismatched keys (ignored) ({len(mismatched)}): {mismatched}')
+    if n_enc_loaded == 0:
+        raise RuntimeError(f'[initialize_weight] no encoder weight is loaded from {init_weight}; check that the checkpoint matches --model')
 
 
 def load_checkpoint(resume_from: str, model_without_ddp, optimizer):
