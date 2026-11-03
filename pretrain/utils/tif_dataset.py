@@ -5,6 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import hashlib
+import itertools
 import os
 import time
 from typing import Callable
@@ -17,17 +18,40 @@ from torch.utils.data import Dataset
 gdal.UseExceptions()
 
 
+_MAX_PRELOAD_BYTES = 256 * 2**20    # files larger than this are opened directly (not read into memory first)
+_vsimem_counter = itertools.count()
+
+
+def _open_tif(path):
+    """
+    open a tif patch with GDAL. the whole file is first read into memory by ONE sequential read, and GDAL decodes it from memory (/vsimem/):
+    GDAL reads an uncompressed strip-layout tif in small pieces (~4KB each, ~150 `read` calls for a 224x224x3 float32 patch),
+    which is cheap on a local disk (the kernel read-ahead merges them), but on a NAS / network file system every
+    piece that is not served by the client cache can cost a network round trip.
+    :return: (dataset, the /vsimem/ path to unlink after use, or None)
+    """
+    if os.path.getsize(path) <= _MAX_PRELOAD_BYTES:
+        with open(path, 'rb') as f:
+            buf = f.read()
+        vsimem_path = f'/vsimem/spark_{os.getpid()}_{next(_vsimem_counter)}.tif'
+        gdal.FileFromMemBuffer(vsimem_path, buf)
+        return gdal.Open(vsimem_path, gdal.GA_ReadOnly), vsimem_path
+    return gdal.Open(path, gdal.GA_ReadOnly), None
+
+
 def tif_loader(path, bands=None) -> torch.Tensor:
     """
     read a [0, 1] float tif patch (made by `make_tif_patches.py`) as a (3, H, W) float32 tensor, WITHOUT any normalization
     :param bands: 1-based band indices to read (e.g., (1, 2, 3)); None: read all bands
     """
-    ds = gdal.Open(path, gdal.GA_ReadOnly)
+    ds, vsimem_path = _open_tif(path)
     if bands:
         arr = np.stack([ds.GetRasterBand(b).ReadAsArray() for b in bands], axis=0)
     else:
         arr = ds.ReadAsArray()
     ds = None
+    if vsimem_path:
+        gdal.Unlink(vsimem_path)
     arr = np.nan_to_num(arr.astype(np.float32, copy=False), nan=0., posinf=0., neginf=0.)
     if arr.ndim == 2:
         arr = arr[None]
