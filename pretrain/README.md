@@ -55,6 +55,9 @@ torchrun --nproc_per_node=8 --nnodes=1 --node_rank=0 --master_addr=localhost --m
 # for 4-band patches: add `--tif_bands=1,2,3`; to resume: add `--resume_from=/path/to/exp/resnet101vd_withdecoder_1kpretrained_spark_style.pth`
 # for bfloat16 mixed precision (A100/H100/RTX30xx or newer): add `--bf16`
 ```
+**Visualizing the reconstruction**: open [/pretrain/viz_reconstruction_tif.ipynb](/pretrain/viz_reconstruction_tif.ipynb) under `pretrain/`, set `CKPT` (`<exp_dir>/<model>_withdecoder_1kpretrained_spark_style.pth`), `PATCH_DIR` and `TIF_BANDS` (same as in training), and run all cells.
+It shows the input / masked input / reconstruction / error of random patches, and compares the masked-region loss (same as the training loss) with simple baselines.
+
 **Patch list cache**: scanning millions of patch files is slow, so the sorted patch list is cached at `<data_path>/.spark_cache/tif_patch_list.pt`
 (or under `~/.cache/spark/` if `--data_path` is not writable; set another path by `--data_cache`). Only the local rank 0 scans the folder; the other ranks load the cache.
 The cache is rebuilt automatically when a scene folder (`<data_path>/<scene>/`) changes; use `--rebuild_data_cache` to force a rescan (e.g., after changing deeper sub-folders).
