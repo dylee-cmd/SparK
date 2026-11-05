@@ -11,7 +11,9 @@ For each scene:
     1. find the valid region (bounding box + convex hull of the valid swath) on a downsampled scene via `gdal.Info` inspection;
        invalid (shadow/background) pixels: NaN/inf, all bands == nodata, all bands <= `--min_valid_val`, or masked by the GDAL MaskBand
     2. compute the 99th percentile value (`--percentile`) of the valid pixels (per band by default)
-    3. contrast stretching: clip to [0, p99] and rescale to [0, 1] (float, NOT converted to uint8)
+    3. contrast stretching: clip to [0, p99] and rescale to [0, 1] (float, NOT converted to uint8);
+       with `--log_scale=amplitude` (or `intensity`): convert to dB first (20*log10(amplitude) or 10*log10(intensity)),
+       then clip to [p1, p99] of the dB values (`--low_percentile`, `--percentile`) and rescale to [0, 1]
     4. slide a `--patch_size` window with a stride of `--stride` (100 by default) pixels, only inside the valid bounding box
     5. drop the patch if it is outside the convex hull by >= `--max_invalid_ratio` (20%), if its invalid pixels are >= `--max_invalid_ratio`,
        or if it is flat (std of the valid pixels < `--min_patch_std`)
@@ -22,6 +24,7 @@ Usage (run under `pretrain/`):
     python3 make_tif_patches.py --src_dir=/path/to/scenes --dst_dir=/path/to/patches
     python3 make_tif_patches.py --src_dir=/path/to/scenes --dst_dir=/path/to/patches --patch_size=224 --stride=100 --bands 3 2 1 --workers=8
     python3 make_tif_patches.py --src_dir=/path/to/scenes --dst_dir=/path/to/patches --dtype=float32   # full precision, 2x larger
+    python3 make_tif_patches.py --src_dir=/path/to/scenes --dst_dir=/path/to/patches --log_scale=amplitude   # SAR amplitude: dB + [p1, p99] stretch
 """
 import argparse
 import json
@@ -183,6 +186,11 @@ def compute_upper_values(sub_arr, sub_valid, percentile, mode):
     return [float(np.percentile(sub_arr[:, sub_valid], percentile))] * sub_arr.shape[0]
 
 
+def to_db(arr: np.ndarray, log_scale: str, eps: float) -> np.ndarray:
+    """ amplitude: 20*log10(x), intensity (power): 10*log10(x); values <= eps (e.g., 0) are clipped to eps before the log """
+    return (20. if log_scale == 'amplitude' else 10.) * np.log10(np.maximum(arr, eps))
+
+
 def sliding_positions_in_bbox(start, end, patch_size, stride):
     """ 전체 영상이 아닌 gdal.Info 기반 유효 Bounding Box 구간 [start, end) 내에서만 슬라이딩 위치 생성 """
     if end - start < patch_size:
@@ -225,12 +233,24 @@ def process_scene(job):
         info['skipped'] = f'valid_bbox {valid_bbox} smaller than patch_size={ps}'
         return info
 
-    upper = compute_upper_values(insp['sub_arr'], insp['sub_valid'], args.percentile, args.percentile_mode)
-    if upper is None:
-        info['skipped'] = 'no valid pixel'
-        return info
-    info['p_upper'] = upper
-    upper = np.maximum(np.array(upper, dtype=np.float32), 1e-12).reshape(-1, 1, 1)
+    if args.log_scale == 'none':
+        upper = compute_upper_values(insp['sub_arr'], insp['sub_valid'], args.percentile, args.percentile_mode)
+        if upper is None:
+            info['skipped'] = 'no valid pixel'
+            return info
+        info['p_upper'] = upper
+        upper = np.maximum(np.array(upper, dtype=np.float32), 1e-12).reshape(-1, 1, 1)
+    else:
+        # dB values of the valid pixels: [p_low, p_high] => [0, 1]
+        sub_db = to_db(insp['sub_arr'], args.log_scale, args.log_eps)
+        lower = compute_upper_values(sub_db, insp['sub_valid'], args.low_percentile, args.percentile_mode)
+        upper = compute_upper_values(sub_db, insp['sub_valid'], args.percentile, args.percentile_mode)
+        if upper is None:
+            info['skipped'] = 'no valid pixel'
+            return info
+        info['p_lower_db'], info['p_upper_db'] = lower, upper
+        lower = np.array(lower, dtype=np.float32).reshape(-1, 1, 1)
+        db_range = np.maximum(np.array(upper, dtype=np.float32).reshape(-1, 1, 1) - lower, 1e-6)
 
     out_dir = os.path.join(args.dst_dir, stem)
     os.makedirs(out_dir, exist_ok=True)
@@ -280,9 +300,13 @@ def process_scene(job):
                     info['dropped'] += 1
                     continue
 
-            # contrast stretching: [0, p_upper] => [0, 1]
             patch = np.nan_to_num(raw_patch, nan=0., posinf=0., neginf=0.)
-            patch = np.clip(patch, 0., upper) / upper
+            if args.log_scale == 'none':
+                # contrast stretching: [0, p_upper] => [0, 1]
+                patch = np.clip(patch, 0., upper) / upper
+            else:
+                # dB, then contrast stretching: [p_lower, p_upper] (in dB) => [0, 1]
+                patch = np.clip((to_db(patch, args.log_scale, args.log_eps) - lower) / db_range, 0., 1.)
             patch[:, inv] = 0.
 
             dst = driver.Create(os.path.join(out_dir, f'{stem}_y{y:06d}_x{x:06d}.tif'), ps, ps, len(bands), gdal.GDT_Float32, options=options)
@@ -306,6 +330,11 @@ def main():
     parser.add_argument('--patch_size', type=int, default=224, help='should be >= the --input_size of main.py')
     parser.add_argument('--stride', type=int, default=100, help='sliding stride in pixels')
     parser.add_argument('--percentile', type=float, default=99., help='the pixel value at this percentile is mapped to 1')
+    parser.add_argument('--log_scale', type=str, default='none', choices=['none', 'amplitude', 'intensity'],
+                        help="'none': linear [0, p99] stretch; 'amplitude': 20*log10(x) (e.g., SAR amplitude/GRD DN) or 'intensity': 10*log10(x) (power), "
+                             "then [p_low, p99] stretch of the dB values")
+    parser.add_argument('--low_percentile', type=float, default=1., help='(only with --log_scale) the dB value at this percentile is mapped to 0')
+    parser.add_argument('--log_eps', type=float, default=1e-6, help='(only with --log_scale) values <= this are clipped to it before the log (avoids log(0))')
     parser.add_argument('--percentile_mode', type=str, default='band', choices=['band', 'global'], help="compute the percentile for each band ('band') or for all bands together ('global')")
     parser.add_argument('--max_invalid_ratio', type=float, default=0.2, help='drop the patch if the ratio of no-data/shadow pixels >= this value')
     parser.add_argument('--nodata', type=float, default=0., help='no-data value, used when the file does not define one')
@@ -335,9 +364,14 @@ def main():
     with Pool(args.workers) if args.workers > 1 else _Serial() as pool:
         for i, info in enumerate(pool.imap_unordered(process_scene, jobs)):
             infos.append(info)
-            msg = (f"skipped ({info['skipped']})" if 'skipped' in info else
-                   f"valid_bbox={info['valid_bbox']}, saved={info['saved']}, dropped={info['dropped']}, "
-                   f"p{args.percentile:g}={['%.4g' % v for v in info['p_upper']]}")
+            if 'skipped' in info:
+                msg = f"skipped ({info['skipped']})"
+            elif args.log_scale == 'none':
+                msg = (f"valid_bbox={info['valid_bbox']}, saved={info['saved']}, dropped={info['dropped']}, "
+                       f"p{args.percentile:g}={['%.4g' % v for v in info['p_upper']]}")
+            else:
+                msg = (f"valid_bbox={info['valid_bbox']}, saved={info['saved']}, dropped={info['dropped']}, "
+                       f"dB p{args.low_percentile:g}={['%.2f' % v for v in info['p_lower_db']]}, p{args.percentile:g}={['%.2f' % v for v in info['p_upper_db']]}")
             print(f"[{i + 1}/{len(scenes)}] {info['scene']} ({info['width']}x{info['height']}): {msg}", flush=True)
 
     with open(os.path.join(args.dst_dir, 'make_tif_patches_info.json'), 'w') as f:
