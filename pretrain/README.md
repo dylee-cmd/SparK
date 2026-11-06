@@ -44,6 +44,7 @@ cd /path/to/SparK/pretrain
 python3 make_tif_patches.py --src_dir=/path/to/scenes --dst_dir=/path/to/patches --patch_size=224 --stride=100 --workers=8
 # options: --percentile=99 --percentile_mode=band|global --max_invalid_ratio=0.2 --nodata=0 --min_valid_val=1e-5|none --min_patch_std=1e-4 --bands 3 2 1 --dtype=float16|float32 --compress=DEFLATE
 # SAR amplitude: --log_scale=amplitude converts to dB (20*log10) and stretches [p1, p99] of the dB values (--low_percentile=1 --percentile=99) to [0, 1]
+# target-rich patches: --bright_db=12 keeps patches with >= --min_bright_pixels (4) pixels 12 dB brighter than the patch median (CFAR-like), plus --keep_background_ratio of the others
 ```
 2. Pretrain with `--data_type=tif` (the default), giving the `--dst_dir` of step 1 as `--data_path` (patches are searched recursively).
    The patches are read as they are (no ImageNet normalization); 1-band patches are repeated to 3 channels.

@@ -16,7 +16,9 @@ For each scene:
        then clip to [p1, p99] of the dB values (`--low_percentile`, `--percentile`) and rescale to [0, 1]
     4. slide a `--patch_size` window with a stride of `--stride` (100 by default) pixels, only inside the valid bounding box
     5. drop the patch if it is outside the convex hull by >= `--max_invalid_ratio` (20%), if its invalid pixels are >= `--max_invalid_ratio`,
-       or if it is flat (std of the valid pixels < `--min_patch_std`)
+       or if it is flat (std of the valid pixels < `--min_patch_std`);
+       optionally (`--bright_db`), keep only patches with bright targets: >= `--min_bright_pixels` valid pixels brighter than
+       the patch median by `--bright_db` dB (CFAR-like), plus a `--keep_background_ratio` fraction of the other patches
     6. save the patch as a float GeoTIFF (with the georeference of the patch); 16-bit float by default (`--dtype`), half the size of float32
 The saved patches can be used directly by `main.py --data_type=tif --data_path=<dst_dir>` (no normalization).
 
@@ -25,8 +27,10 @@ Usage (run under `pretrain/`):
     python3 make_tif_patches.py --src_dir=/path/to/scenes --dst_dir=/path/to/patches --patch_size=224 --stride=100 --bands 3 2 1 --workers=8
     python3 make_tif_patches.py --src_dir=/path/to/scenes --dst_dir=/path/to/patches --dtype=float32   # full precision, 2x larger
     python3 make_tif_patches.py --src_dir=/path/to/scenes --dst_dir=/path/to/patches --log_scale=amplitude   # SAR amplitude: dB + [p1, p99] stretch
+    python3 make_tif_patches.py --src_dir=/path/to/scenes --dst_dir=/path/to/patches --bright_db=12 --keep_background_ratio=0.2   # target-rich patches
 """
 import argparse
+import hashlib
 import json
 import os
 import time
@@ -191,6 +195,27 @@ def to_db(arr: np.ndarray, log_scale: str, eps: float) -> np.ndarray:
     return (20. if log_scale == 'amplitude' else 10.) * np.log10(np.maximum(arr, eps))
 
 
+def count_bright_pixels(raw_patch: np.ndarray, inv: np.ndarray, ratio: float) -> int:
+    """
+    CFAR-like bright target detection on the raw (unstretched) values: the number of valid pixels whose (band-mean) value is
+    >= `ratio` x the median of the valid pixels of the patch (the local background). e.g., ratio 4 (12 dB in amplitude): a pixel of
+    single-look amplitude speckle exceeds it with a probability of 2^-16 (~1 pixel per 224x224 patch), so pure speckle rarely passes.
+    """
+    v = raw_patch.mean(axis=0)
+    valid = ~inv & np.isfinite(v)
+    if not valid.any():
+        return 0
+    background = max(float(np.median(v[valid])), 1e-12)
+    return int(np.count_nonzero(v[valid] >= background * ratio))
+
+
+def keep_background(stem: str, y: int, x: int, keep_ratio: float) -> bool:
+    """ deterministic (reproducible) random choice of the non-target patches to keep """
+    if keep_ratio <= 0:
+        return False
+    return int.from_bytes(hashlib.md5(f'{stem}_{y}_{x}'.encode()).digest()[:8], 'little') / 2**64 < keep_ratio
+
+
 def sliding_positions_in_bbox(start, end, patch_size, stride):
     """ 전체 영상이 아닌 gdal.Info 기반 유효 Bounding Box 구간 [start, end) 내에서만 슬라이딩 위치 생성 """
     if end - start < patch_size:
@@ -221,6 +246,10 @@ def process_scene(job):
         min_valid_val=args.min_valid_val, gdal_mask_flags=insp['gdal_mask_flags'], has_footprint=insp['has_footprint'],
         valid_bbox=valid_bbox, saved=0, dropped=0
     )
+    if args.bright_db is not None:
+        info.update(target=0, background_kept=0, no_target_dropped=0)
+        # a dB ratio of the stored quantity: amplitude 20*log10, intensity (power) 10*log10
+        bright_ratio = 10 ** (args.bright_db / (10. if args.log_scale == 'intensity' else 20.))
 
     if valid_bbox is None:
         info['skipped'] = 'no valid L1-D pixel found via gdal.Info inspection'
@@ -300,6 +329,17 @@ def process_scene(job):
                     info['dropped'] += 1
                     continue
 
+            # 4) (optional) bright target check: keep patches with bright targets, and a fraction of the others as background
+            if args.bright_db is not None:
+                if count_bright_pixels(raw_patch, inv, bright_ratio) >= args.min_bright_pixels:
+                    info['target'] += 1
+                elif keep_background(stem, y, x, args.keep_background_ratio):
+                    info['background_kept'] += 1
+                else:
+                    info['no_target_dropped'] += 1
+                    info['dropped'] += 1
+                    continue
+
             patch = np.nan_to_num(raw_patch, nan=0., posinf=0., neginf=0.)
             if args.log_scale == 'none':
                 # contrast stretching: [0, p_upper] => [0, 1]
@@ -343,6 +383,12 @@ def main():
                         help="treat pixels whose bands are all <= this threshold as L1-D shadow/background padding ('none' to disable)")
     parser.add_argument('--min_patch_std', type=float, default=1e-4,
                         help='drop flat/constant shadow patches whose valid pixel std (before stretching) < this threshold (0 to disable)')
+    parser.add_argument('--bright_db', type=_float_or_none, default=None,
+                        help='keep only patches with bright targets: pixels brighter than the patch median by this many dB (e.g., 12); '
+                             'dB of amplitude (20*log10) unless --log_scale=intensity. default: none (keep all patches)')
+    parser.add_argument('--min_bright_pixels', type=int, default=4, help='(only with --bright_db) a patch has a target if it has at least this many bright pixels')
+    parser.add_argument('--keep_background_ratio', type=float, default=0.,
+                        help='(only with --bright_db) fraction of the patches WITHOUT targets to keep anyway (e.g., 0.2), so that background clutter is still learned')
     parser.add_argument('--bands', type=int, nargs='+', default=None, help='1-based band indices to keep (default: all bands); SparK uses 1 or 3 bands')
     parser.add_argument('--exts', type=str, nargs='+', default=['.tif', '.tiff'], help='extensions of the scene files')
     parser.add_argument('--no_recursive', action='store_true', help='do not search the scenes in sub-folders of --src_dir')
@@ -372,12 +418,17 @@ def main():
             else:
                 msg = (f"valid_bbox={info['valid_bbox']}, saved={info['saved']}, dropped={info['dropped']}, "
                        f"dB p{args.low_percentile:g}={['%.2f' % v for v in info['p_lower_db']]}, p{args.percentile:g}={['%.2f' % v for v in info['p_upper_db']]}")
+            if 'target' in info and 'skipped' not in info:
+                msg += f", target={info['target']}, background_kept={info['background_kept']}, no_target_dropped={info['no_target_dropped']}"
             print(f"[{i + 1}/{len(scenes)}] {info['scene']} ({info['width']}x{info['height']}): {msg}", flush=True)
 
     with open(os.path.join(args.dst_dir, 'make_tif_patches_info.json'), 'w') as f:
         json.dump(dict(args=vars(args), scenes=sorted(infos, key=lambda d: d['scene'])), f, indent=2)
     print(f"[make_tif_patches] saved {sum(d['saved'] for d in infos)} patches, dropped {sum(d['dropped'] for d in infos)} patches, "
           f'to {args.dst_dir} ({time.time() - start:.1f}s)')
+    if args.bright_db is not None:
+        print(f"[make_tif_patches] bright target filter: target={sum(d.get('target', 0) for d in infos)}, "
+              f"background_kept={sum(d.get('background_kept', 0) for d in infos)}, no_target_dropped={sum(d.get('no_target_dropped', 0) for d in infos)}")
 
 
 def _float_or_none(v):
